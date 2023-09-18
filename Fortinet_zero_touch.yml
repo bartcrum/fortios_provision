@@ -1,0 +1,313 @@
+---
+- name: Fortigate SD-WAN Zero-Touch Deployment
+  hosts: new_fortigates
+  gather_facts: no
+  vars_files:
+    - vars/main.yml
+  tasks:
+    - name: Set up system settings
+      fortios_system_global:
+        access_token: "{{ fortigate_access_token }}"
+        system_global:
+          hostname: "{{ inventory_hostname }}"
+          timezone: "auto"
+          dns_server_list:
+            - id: 1
+              server: "x.x.x.x"
+            - id: 2
+              server: "x.x.x.x"
+          ntp_server_list:
+            - id: 1
+              server: "NTP_SERVER"
+
+    - name: Set up management loopback interface
+      fortios_system_interface:
+        access_token: "{{ fortigate_access_token }}"
+        system_interface:
+          name: "loopback0"
+          type: "loopback"
+          ip: "LOOPBACK_IP"
+          allowaccess: "ping https ssh"
+
+    - name: Set up MPLS handoff on X1 with BGP peering
+      block:
+        - name: Configure X1 interface for MPLS
+          fortios_system_interface:
+            access_token: "{{ fortigate_access_token }}"
+            system_interface:
+              name: "X1"
+              description: "MPLS Circuit ID: {{ solarwinds_response.json.results[0].CustomProperties.CircuitID }}"
+              type: "physical"
+              ip: "{{ x1_ip }}"
+              allowaccess: "ping https ssh"
+
+        - name: Configure BGP for underlay
+          fortios_router_bgp:
+            access_token: "{{ fortigate_access_token }}"
+            router_bgp:
+              as: "{{ bgp_as }}"
+              neighbor:
+                - ip: "{{ bgp_neighbor_ip }}"
+                  remote_as: "{{ bgp_neighbor_remote_as }}"
+              network:
+                - prefix: "{{ bgp_network_prefix }}"
+
+        - name: Configure BGP for overlay
+          fortios_router_bgp:
+            access_token: "{{ fortigate_access_token }}"
+            router_bgp:
+              as: "{{ bgp_as }}"
+              neighbor:
+                - ip: "{{ overlay_bgp_neighbor_ip }}"
+                  remote_as: "{{ overlay_bgp_neighbor_remote_as }}"
+              network:
+                - prefix: "{{ overlay_network_prefix }}"
+              redistribute:
+                - name: "connected"
+              bgp_params:
+                - name: "bestpath-as-path-ignore"
+
+        - name: Configure VPN tunnels from spoke to hub
+          block:
+            - name: Configure IPsec phase 1
+              fortios_vpn_ipsec_phase1_interface:
+                access_token: "{{ fortigate_access_token }}"
+                vpn_ipsec_phase1_interface:
+                  name: "Spoke_to_Hub_Phase1"
+                  interface: "X1"  # The interface connecting to the hub
+                  peertype: "any"
+                  proposal: "aes256-sha256"
+                  dhgrp: "14"
+                  remote-gw: "{{ hub_ip }}"
+                  psksecret: "{{ psk_secret }}"
+
+            - name: Configure IPsec phase 2
+              fortios_vpn_ipsec_phase2_interface:
+                access_token: "{{ fortigate_access_token }}"
+                vpn_ipsec_phase2_interface:
+                  name: "Spoke_to_Hub_Phase2"
+                  phase1name: "Spoke_to_Hub_Phase1"
+                  proposal: "aes256-sha256"
+                  dhgrp: "14"
+                  src-addr-type: "subnet"
+                  dst-addr-type: "subnet"
+                  src-subnet: "{{ spoke_subnet }}"
+                  dst-subnet: "{{ hub_subnet }}"
+
+    - name: Set up local switch interface on X3 with VLANs
+      block:
+        - name: Configure X3 interface
+          fortios_system_interface:
+            access_token: "{{ fortigate_access_token }}"
+            system_interface:
+              name: "X3"
+              type: "physical"
+              ip: "{{ x3_ip }}"
+              allowaccess: "ping https ssh"
+
+    - name: Configure VLANs on X3
+      fortios_system_interface:
+        access_token: "{{ fortigate_access_token }}"
+        system_interface:
+          name: "{{ item.name }}"
+          type: "vlan"
+          vlanid: "{{ item.vlanid }}"
+          interface: "X3"
+          ip: "{{ item.ip }}/24"
+          allowaccess: "ping https ssh"
+      loop:
+        - name: "Data"
+          vlanid: 10
+          gateway_ip: "{{ item.network.split('.')[0:3] | join('.') }}.254"
+        - name: "Voice"
+          vlanid: 20
+          gateway_ip: "{{ item.network.split('.')[0:3] | join('.') }}.254"
+        - name: "Security"
+          vlanid: 30
+          gateway_ip: "{{ item.network.split('.')[0:3] | join('.') }}.254"
+        - name: "ATM"
+          vlanid: 40
+          gateway_ip: "{{ item.network.split('.')[0:3] | join('.') }}.254"
+        - name: "Printers"
+          vlanid: 50
+          gateway_ip: "{{ item.network.split('.')[0:3] | join('.') }}.254"
+
+    - name: Set up authentication
+      block:
+        - name: Configure admin authentication
+          fortios_system_admin:
+            access_token: "{{ fortigate_access_token }}"
+            system_admin:
+              name: "admin"
+              password: "{{ admin_password }}"
+              # Add other authentication settings as needed
+
+    - name: Set up SD-WAN rules
+      block:
+        - name: Configure SD-WAN members
+          fortios_system_virtual_wan_link:
+            access_token: "{{ fortigate_access_token }}"
+            system_virtual_wan_link:
+              members:
+                - interface: "X1"
+                - interface: "X2"
+          # Add health checks and other settings as needed
+
+        - name: Configure SD-WAN rules
+          fortios_system_sdwan:
+            access_token: "{{ fortigate_access_token }}"
+            system_sdwan:
+              rules:
+                - name: "Google Services"
+                  dstaddr: "GOOGLE_SERVICES_ADDR_OBJ"
+                  internet_service_name: "Google Services"
+                  members:
+                    - seq_num: 1
+                      interface: "X2"
+                  # Add other rule settings as needed
+
+    - name: Apply best practices
+      block:
+        - name: Configure logging
+          # Add tasks to configure logging
+
+        - name: Configure monitoring
+          # Add tasks to configure monitoring
+
+
+        # ... (other best practices)
+
+
+  
+####POTENTIAL SOLARWINDS USE
+# vars/solarwinds_credentials.yml (encrypted with Ansible Vault)
+solarwinds:
+  host: "https://solarwinds-instance.com"
+  username: "solarwinds-username"
+  password: "solarwinds-password"
+
+###encrypt the file
+ansible-vault encrypt vars/solarwinds_credentials.yml
+
+### this would retrieve based on Site name variable but can modify to whichever pulls correctly
+- name: Retrieve Circuit ID from SolarWinds
+  block:
+    - name: Include SolarWinds credentials
+      include_vars:
+        file: vars/solarwinds_credentials.yml
+
+    - name: Get Circuit ID from SolarWinds
+      uri:
+        url: "{{ solarwinds.host }}/SolarWinds/InformationService/v3/Json/Query?query=SELECT+CustomProperties.CircuitID+FROM+Orion.Nodes+WHERE+Caption='{{ site_name }}'"
+        method: GET
+        user: "{{ solarwinds.username }}"
+        password: "{{ solarwinds.password }}"
+        force_basic_auth: true
+        return_content: true
+      register: solarwinds_response
+  delegate_to: localhost
+
+- name: Display Circuit ID
+  debug:
+    var: solarwinds_response.json.results[0].CustomProperties.CircuitID
+
+
+
+
+### ensure ansible collection for infoblox is installed
+ansible-galaxy collection install infoblox.nios_modules
+
+
+### create a yml file with the credentials to infoblox
+### vars/infoblox_credentials.yml (encrypted with Ansible Vault)
+infoblox:
+  host: "https://infoblox-instance.com"
+  username: "infoblox-username"
+  password: "infoblox-password"
+
+### encryption of the file
+ansible-vault encrypt vars/infoblox_credentials.yml
+
+
+### main.yml var file would include the following 
+
+site_name: "Oneonta"
+vlan_names:
+  - "Data"
+  - "Voice"
+  - "Security"
+  - "ATM"
+  - "Printers"
+
+
+## this would be based on site name and VLAN name
+
+- name: Retrieve VLAN subnets from Infoblox based on description
+  block:
+    - name: Include Infoblox credentials
+      include_vars:
+        file: vars/infoblox_credentials.yml
+
+    - name: Get VLAN subnets from Infoblox
+      infoblox.nios_modules.nios_network:
+        provider:
+          host: "{{ infoblox.host }}"
+          username: "{{ infoblox.username }}"
+          password: "{{ infoblox.password }}"
+        state: fetch
+        network_view: "default"
+        extattrs:
+          Description: "{{ site_name }} {{ item }}"
+      register: vlan_subnets
+      loop: "{{ vlan_names }}"
+  delegate_to: localhost
+
+- name: Display VLAN subnets
+  debug:
+    var: vlan_subnets
+
+
+
+###main.yml file for vars
+
+# General settings
+fortigate_access_token: "_FORTIGATE_ACCESS_TOKEN"
+inventory_hostname: "_INVENTORY_HOSTNAME"
+
+# System settings
+timezone: "auto"
+ntp_server: "NTP_SERVER"
+
+# Interface settings
+x1_ip: "X1_IP_ADDRESS"
+x2_ip: "X2_IP_ADDRESS"
+x3_ip: "X3_IP_ADDRESS"
+loopback_ip: "LOOPBACK_IP_ADDRESS"
+
+# BGP settings for underlay and overlay
+bgp_as: _BGP_AS_NUMBER
+bgp_neighbor_ip: "BGP_NEIGHBOR_IP"
+bgp_neighbor_remote_as: BGP_NEIGHBOR_REMOTE_AS
+bgp_network_prefix: "BGP_NETWORK_PREFIX"
+overlay_bgp_neighbor_ip: "OVERLAY_BGP_NEIGHBOR_IP"
+overlay_bgp_neighbor_remote_as: OVERLAY_BGP_NEIGHBOR_REMOTE_AS
+overlay_network_prefix: "OVERLAY_NETWORK_PREFIX"
+
+# VPN settings
+hub_ip: "HUB_IP_ADDRESS"
+psk_secret: "PSK_SECRET"
+spoke_subnet: "SPOKE_SUBNET"
+hub_subnet: "HUB_SUBNET"
+bgp_neighbor_ip_tunnel: "BGP_NEIGHBOR_IP_TUNNEL"
+bgp_neighbor_remote_as_tunnel: BGP_NEIGHBOR_REMOTE_AS_TUNNEL
+overlay_network_prefix_tunnel: "OVERLAY_NETWORK_PREFIX_TUNNEL"
+
+# Admin settings
+admin_password: "_ADMIN_PASSWORD"
+
+# VLAN settings
+data_vlan_ip: "192.168.10.1"
+voice_vlan_ip: "192.168.20.1"
+security_vlan_ip: "192.168.30.1"
+atm_vlan_ip: "192.168.40.1"
+printers_vlan_ip: "192.168.50.1"
